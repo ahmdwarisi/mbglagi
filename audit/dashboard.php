@@ -1,22 +1,4 @@
 <?php
-<<<<<<< HEAD
-
-$title="Dashboard Audit";
-
-include("../includes/audit/header.php");
-
-include("../includes/audit/sidebar.php");
-
-?>
-
-<!-- seluruh isi dashboard -->
-
-<?php
-
-include("../includes/audit/footer.php");
-
-?>
-=======
 require __DIR__ . '/config.php';
 require dirname(__DIR__) . '/config/database.php';
 
@@ -24,16 +6,57 @@ $pageTitle = "Dashboard";
 $topbarTitle = "PAN MBG Dashboard";
 
 try {
-  $connection = mbg_db_init();
-  $stats = [
-    'sppg' => (int)$connection->query("SELECT COUNT(*) AS c FROM sppg_units")->fetch_assoc()['c'],
-    'supplier' => (int)$connection->query("SELECT COUNT(*) AS c FROM suppliers")->fetch_assoc()['c'],
-    'transactions' => (int)$connection->query("SELECT COUNT(*) AS c FROM transactions")->fetch_assoc()['c'],
-    'budget' => (float)$connection->query("SELECT SUM(allocated_amount - used_amount) AS c FROM budgets")->fetch_assoc()['c'],
-  ];
-  mbg_db_close($connection);
+    $connection = mbg_db_init();
+
+    // Fetch main stats safely
+    $sppg_res = $connection->query("SELECT COUNT(*) AS c FROM sppg_units WHERE status = 'active'")->fetch_assoc();
+    $supplier_res = $connection->query("SELECT COUNT(*) AS c FROM suppliers WHERE status = 'active'")->fetch_assoc();
+    $budget_res = $connection->query("SELECT SUM(allocated_amount - used_amount) AS c FROM budgets")->fetch_assoc();
+    $alerts_res = $connection->query("SELECT COUNT(*) AS c FROM alerts WHERE severity = 'high'")->fetch_assoc();
+
+    $date_filter = $connection->getDriver() === 'sqlite' ? "DATE(created_at) = DATE('now')" : "DATE(created_at) = CURDATE()";
+    $transactions_res = $connection->query("SELECT COUNT(*) AS c FROM transactions WHERE {$date_filter}")->fetch_assoc();
+
+    $stats = [
+        'sppg' => (int)($sppg_res['c'] ?? 0),
+        'supplier' => (int)($supplier_res['c'] ?? 0),
+        'transactions' => (int)($transactions_res['c'] ?? 0),
+        'budget' => (float)($budget_res['c'] ?? 0),
+        'alerts' => (int)($alerts_res['c'] ?? 0),
+    ];
+
+    // Fetch top spending regions
+    $top_spending_query = "SELECT region, SUM(used_amount) as total_spent FROM budgets GROUP BY region ORDER BY total_spent DESC LIMIT 5";
+    $top_spending_result = $connection->query($top_spending_query);
+    $top_spending = [];
+    while ($row = $top_spending_result->fetch_assoc()) {
+        $top_spending[] = $row;
+    }
+    $max_spent = !empty($top_spending) ? $top_spending[0]['total_spent'] : 0;
+
+    // Fetch recent transactions
+    $recent_transactions_query = "
+        SELECT t.transaction_code, t.created_at, t.commodity, t.total_amount, t.status, s.name as supplier_name, u.name as sppg_name
+        FROM transactions t
+        JOIN suppliers s ON t.supplier_id = s.id
+        JOIN sppg_units u ON t.sppg_id = u.id
+        ORDER BY t.created_at DESC LIMIT 4";
+    $recent_transactions_result = $connection->query($recent_transactions_query);
+
+    // Fetch alerts for display
+    $alerts_query = "SELECT title, description, severity, icon FROM alerts ORDER BY created_at DESC LIMIT 3";
+    $alerts_result = $connection->query($alerts_query);
+    $alerts_cards = [];
+    while ($row = $alerts_result->fetch_assoc()) {
+        $alerts_cards[] = $row;
+    }
+
 } catch (Throwable $e) {
-  $stats = ['sppg' => 0, 'supplier' => 0, 'transactions' => 0, 'budget' => 0];
+    $stats = ['sppg' => 0, 'supplier' => 0, 'transactions' => 0, 'budget' => 0, 'alerts' => 0];
+    $top_spending = [];
+    $recent_transactions_result = null;
+    $alerts_cards = [];
+    error_log("Dashboard Error: " . $e->getMessage()); // Catat error ke log server
 }
 
 require __DIR__ . '/includes/header.php';
@@ -67,9 +90,9 @@ require __DIR__ . '/includes/header.php';
     <div class="stat-label-plain">Sisa Anggaran</div>
     <div class="stat-value">Rp <?php echo number_format($stats['budget'] / 1000000000000, 1, ',', '.'); ?>T <small>37.2%</small></div>
   </div>
-  <div class="stat-card danger">
+  <div class="stat-card red">
     <div class="stat-label-plain" style="color:var(--red-text);">Indikasi Kecurangan</div>
-    <div class="stat-value">24 <i data-lucide="alert-triangle" style="width:18px;height:18px;"></i></div>
+    <div class="stat-value"><?php echo number_format($stats['alerts'], 0, ',', '.'); ?> <i data-lucide="alert-triangle" style="width:18px;height:18px;"></i></div>
   </div>
 </div>
 
@@ -84,26 +107,17 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="card">
     <div class="card-title mb-20">Pengeluaran Teratas (Provinsi)</div>
-    <div class="bar-list-item">
-      <div class="bar-list-top"><b>Jawa Barat</b><span>Rp 420M</span></div>
-      <?php echo progress_bar(88, 'dark'); ?>
-    </div>
-    <div class="bar-list-item">
-      <div class="bar-list-top"><b>Jawa Timur</b><span>Rp 385M</span></div>
-      <?php echo progress_bar(80, 'dark'); ?>
-    </div>
-    <div class="bar-list-item">
-      <div class="bar-list-top"><b>Jawa Tengah</b><span>Rp 310M</span></div>
-      <?php echo progress_bar(65, 'dark'); ?>
-    </div>
-    <div class="bar-list-item">
-      <div class="bar-list-top"><b>Sumatera Utara</b><span>Rp 245M</span></div>
-      <?php echo progress_bar(51, 'dark'); ?>
-    </div>
-    <div class="bar-list-item">
-      <div class="bar-list-top"><b>Sulawesi Selatan</b><span>Rp 190M</span></div>
-      <?php echo progress_bar(40, 'dark'); ?>
-    </div>
+    <?php if (empty($top_spending)): ?>
+      <p style="text-align:center; color: #666; padding: 20px 0;">Data pengeluaran belum tersedia.</p>
+    <?php else: ?>
+      <?php foreach ($top_spending as $item): ?>
+        <div class="bar-list-item">
+          <div class="bar-list-top"><b><?php echo htmlspecialchars($item['region']); ?></b><span>Rp <?php echo number_format($item['total_spent'] / 1000000, 0, ',', '.'); ?>M</span></div>
+          <?php $percentage = ($max_spent > 0) ? ($item['total_spent'] / $max_spent) * 100 : 0; ?>
+          <?php echo progress_bar($percentage, 'dark'); ?>
+        </div>
+      <?php endforeach; ?>
+    <?php endif; ?>
   </div>
 </div>
 
@@ -153,30 +167,29 @@ require __DIR__ . '/includes/header.php';
   Peringatan Deteksi Kecurangan (Audit AI)
 </h3>
 <div class="grid grid-3 mb-24">
-  <div class="insight-card red">
-    <div class="insight-icon"><i data-lucide="trending-up"></i></div>
-    <div>
-      <h4>Harga Melebihi Acuan</h4>
-      <p>Telur Ayam di SPPG Bandung Utara naik 45% dalam 2 jam.</p>
-      <div class="insight-tag">RESIKO TINGGI</div>
+  <?php
+    $severity_map = [
+        'high' => ['color' => 'red', 'label' => 'RESIKO TINGGI'],
+        'medium' => ['color' => 'amber', 'label' => 'RESIKO MENENGAH'],
+        'low' => ['color' => 'blue', 'label' => 'RESIKO RENDAH'],
+    ];
+    foreach ($alerts_cards as $alert):
+      $style = $severity_map[$alert['severity']] ?? ['color' => 'neutral', 'label' => 'INFO'];
+  ?>
+    <div class="insight-card <?php echo $style['color']; ?>">
+      <div class="insight-icon"><i data-lucide="<?php echo htmlspecialchars($alert['icon']); ?>"></i></div>
+      <div>
+        <h4><?php echo htmlspecialchars($alert['title']); ?></h4>
+        <p><?php echo htmlspecialchars($alert['description']); ?></p>
+        <div class="insight-tag"><?php echo $style['label']; ?></div>
+      </div>
     </div>
-  </div>
-  <div class="insight-card amber">
-    <div class="insight-icon"><i data-lucide="copy"></i></div>
-    <div>
-      <h4>Indikasi Transaksi Ganda</h4>
-      <p>3 ID Transaksi serupa ditemukan pada Supplier Tani Makmur.</p>
-      <div class="insight-tag">RESIKO MENENGAH</div>
+  <?php endforeach; ?>
+  <?php if (empty($alerts_cards)): ?>
+    <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 40px;">
+        <p>Tidak ada peringatan kecurangan yang aktif saat ini.</p>
     </div>
-  </div>
-  <div class="insight-card red">
-    <div class="insight-icon"><i data-lucide="map-pin-off"></i></div>
-    <div>
-      <h4>Anomali Lokasi Pengiriman</h4>
-      <p>Logistik SPPG Makassar terdeteksi di luar rute operasional.</p>
-      <div class="insight-tag">INVESTIGASI SEGERA</div>
-    </div>
-  </div>
+  <?php endif; ?>
 </div>
 
 <!-- Transaksi Terbaru -->
@@ -193,33 +206,28 @@ require __DIR__ . '/includes/header.php';
         </tr>
       </thead>
       <tbody>
-        <tr>
-          <td class="cell-strong">MBG-772910</td><td>09:24 WIB</td><td>SPPG Surabaya Barat</td><td>UMKM Tani Makmur</td><td>Beras Premium</td>
-          <td class="cell-money">Rp 12.400.000</td><td><?php echo badge('SELESAI','success'); ?></td>
-          <td><span class="action-eye"><i data-lucide="eye"></i></span></td>
-        </tr>
-        <tr>
-          <td class="cell-strong">MBG-772911</td><td>09:18 WIB</td><td>SPPG Medan Baru</td><td>Koperasi Nelayan Sejahtera</td><td>Ikan Segar</td>
-          <td class="cell-money">Rp 8.750.000</td><td><?php echo badge('DIPROSES','info'); ?></td>
-          <td><span class="action-eye"><i data-lucide="eye"></i></span></td>
-        </tr>
-        <tr>
-          <td class="cell-strong">MBG-772912</td><td>08:55 WIB</td><td>SPPG Jakarta Pusat</td><td>PT. Distribusi Nasional</td><td>Susu UHT</td>
-          <td class="cell-money">Rp 45.000.000</td><td><?php echo badge('DIBATALKAN','danger'); ?></td>
-          <td><span class="action-eye"><i data-lucide="eye"></i></span></td>
-        </tr>
-        <tr>
-          <td class="cell-strong">MBG-772913</td><td>08:42 WIB</td><td>SPPG Balikpapan</td><td>Agro Maju Mandiri</td><td>Telur Ayam</td>
-          <td class="cell-money">Rp 15.200.000</td><td><?php echo badge('SELESAI','success'); ?></td>
-          <td><span class="action-eye"><i data-lucide="eye"></i></span></td>
-        </tr>
+        <?php
+          $status_map = ['Selesai' => 'success', 'Diproses' => 'info', 'Dibatalkan' => 'danger'];
+          if ($recent_transactions_result):
+            while ($row = $recent_transactions_result->fetch_assoc()):
+        ?>
+          <tr>
+            <td class="cell-strong"><?php echo htmlspecialchars($row['transaction_code']); ?></td>
+            <td><?php echo date('H:i', strtotime($row['created_at'])); ?> WIB</td>
+            <td><?php echo htmlspecialchars($row['sppg_name']); ?></td>
+            <td><?php echo htmlspecialchars($row['supplier_name']); ?></td>
+            <td><?php echo htmlspecialchars($row['commodity']); ?></td>
+            <td class="cell-money">Rp <?php echo number_format($row['total_amount'], 0, ',', '.'); ?></td>
+            <td><?php echo badge(strtoupper($row['status']), $status_map[$row['status']] ?? 'neutral'); ?></td>
+            <td><span class="action-eye"><i data-lucide="eye"></i></span></td>
+          </tr>
+        <?php endwhile; endif; ?>
       </tbody>
     </table>
   </div>
   <div style="height:6px;"></div>
 </div>
 
-<!-- Bottom row -->
 <div class="grid grid-2">
   <div class="card">
     <div class="card-title mb-20">Supplier Menunggu Verifikasi</div>
@@ -257,5 +265,10 @@ require __DIR__ . '/includes/header.php';
   </div>
 </div>
 
-<?php require __DIR__ . '/includes/footer.php'; ?>
->>>>>>> ff1201f75441069f9711212467de0dc41c75e27e
+<?php
+if (isset($connection)) {
+    mbg_db_close($connection);
+}
+
+require __DIR__ . '/includes/footer.php';
+?>
